@@ -9,8 +9,8 @@
 # Stage 1: build web assets using the published SDK
 FROM node:20-alpine AS build
 
-ARG replicable_SDK_VERSION=${replicable_SDK_VERSION}
-ARG SDK_VERSION=${replicable_SDK_VERSION:-latest}
+ARG REPLICABLE_SDK_VERSION=${REPLICABLE_SDK_VERSION}
+ARG SDK_VERSION=${REPLICABLE_SDK_VERSION:-latest}
 
 WORKDIR /app
 COPY src/replicable/client/web ./

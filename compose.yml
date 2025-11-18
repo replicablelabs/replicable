@@ -62,7 +62,7 @@ services:
       - replicable-milvus:/var/lib/milvus
     ports:
       - "19530:19530" # grpc, http
-      - "9091:9091" # monitoring
+      - "9092:9091" # monitoring
     depends_on:
       milvus-etcd:
         condition: service_healthy
@@ -142,14 +142,14 @@ services:
   # REQUIREMENTS
   # - the replicable SDK must have been deployed to the npmjs registry @versionminu/replicable
   #
-  # replicable_SDK_VERSION=v1.1.0-b.1 docker compose build --no-cache web
+  # REPLICABLE_SDK_VERSION=v1.1.0-b.1 docker compose build --no-cache web
   web:
     build:
       context: .
       dockerfile: src/replicable/client/web/Dockerfile
       target: runtime
       args: # build-time args
-        SDK_VERSION: ${replicable_SDK_VERSION?Set replicable_SDK_VERSION (e.g. v1.0.0-b.1)}
+        SDK_VERSION: ${REPLICABLE_SDK_VERSION?Set REPLICABLE_SDK_VERSION (e.g. v1.0.0-b.1)}
     env_file: # run-time env vars
       - src/replicable/client/web/.env
     image: replicable-web:1.0.0
@@ -179,8 +179,8 @@ services:
   #
   # local build
   #
-  # replicable_SDK_VERSION=v1.1.0-b.1 docker compose up -d nginx
-  # replicable_SDK_VERSION=v1.1.0-b.1 docker compose exec nginx nginx -t
+  # REPLICABLE_SDK_VERSION=v1.1.0-b.1 docker compose up -d nginx
+  # REPLICABLE_SDK_VERSION=v1.1.0-b.1 docker compose exec nginx nginx -t
   nginx:
     build:
       context: src/replicable/nginx
@@ -207,7 +207,7 @@ services:
     container_name: replicable-loki
     command: -config.file=/etc/loki/config.yml
     volumes:
-      - ./src/replicable/observability/loki/config.yml:/etc/loki/config.yml:ro
+      - ./src/replicable/observability/loki:/etc/loki:ro
       - replicable-loki-data:/loki
     ports:
       - "3100:3100"
@@ -226,8 +226,7 @@ services:
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./src/replicable/observability/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
-      - ./src/replicable/observability/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+      - ./src/replicable/observability/fluent-bit:/fluent-bit/etc:ro
     depends_on:
       - loki
     networks:
@@ -242,7 +241,7 @@ services:
     container_name: replicable-tempo
     command: -config.file=/etc/tempo/tempo.yml
     volumes:
-      - ./src/replicable/observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - ./src/replicable/observability/tempo:/etc/tempo:ro
       - replicable-tempo-data:/var/tempo
     ports:
       - "3200:3200"
@@ -282,7 +281,7 @@ services:
       - "--storage.tsdb.path=/prometheus"
       - "--web.enable-lifecycle"
     volumes:
-      - ./src/replicable/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./src/replicable/observability/prometheus:/etc/prometheus:ro
       - replicable-prometheus-data:/prometheus
     ports:
       - "9090:9090"

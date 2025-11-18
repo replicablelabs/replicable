@@ -168,12 +168,14 @@ Checklist to keep HTTPS healthy
     - `MODELHUB_API_KEY`, `MODELHUB_BASE_URL`, `MODELHUB`
     - `AUTH_*` variables
 
-- devcontainer
+- devcontainer (to access all the dev tools)
   - `docker compose -f .devcontainer/compose.yml build base`
   - `docker compose -f .devcontainer/compose.yml build tools`
+  - `USRID=$(id -u) USRNAME=$(whoami) docker compose -f .devcontainer/compose.yml build --no-cache --pull=false`
+  - reopen in devcontainer
 
 - Start core services (database, vector store, observability)
-  - `docker compose up -d milvus-etcd milvus-minio milvus db otel-collector prometheus tempo loki fluent-bit grafana`
+  - `REPLICABLE_SDK_VERSION=v1.0.0-b.1 docker compose up -d milvus-etcd milvus-minio milvus db otel-collector prometheus tempo loki fluent-bit grafana`
 
 - Start API
   - `docker compose up -d mcp`
