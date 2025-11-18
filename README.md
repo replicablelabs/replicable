@@ -121,76 +121,6 @@ We're delighted that you decided to contribute to the project.
 </human-core-identity>
 ```
 
-## gh-pages
-
-This repository serves a static site via GitHub Pages at `https://replicable.com`.
-
-Included files
-- `index.html` – org‑style landing page (adds canonical and www→apex redirect).
-- `404.html` – not‑found page.
-- `CNAME` – contains `replicable.com`.
-
-Publish steps
-1. Push site files to `gh-pahes`.
-2. GitHub → Settings → Pages → Source: Deploy from a branch → `gh-pahes` / `(root)`.
-3. Set Custom domain to `replicable.com` and wait for TLS.
-4. Enable `Enforce HTTPS`
-
-DNS (GoDaddy)
-- Apex `@` → A records: `85.10.206.37`
-- `www` → CNAME: `replicable.com`
-- Remove URL forwarding and conflicting A/AAAA/CNAME records.
-
-Verify
-- `dig +short replicable.com A` → four 185.199.* IPs
-- `dig +short www.replicable.com CNAME` → `replicable.com.`
-- Pages Settings shows `DNS check successful` and HTTPS enabled.
-
-and run nginx reverse proxy
-
-```sh
-replicable_SDK_VERSION=v1.1.0-b.1 docker compose build --no-cache nginx
-replicable_SDK_VERSION=v1.1.0-b.1 docker compose up -d nginx
-```
-
-issue certificates once to the mount directory of the the nginx docker service
-
-```sh
-❯ docker run --rm \
-  -v "$(pwd)/src/replicable/nginx/www:/var/www/html" \
-  -v replicable-nginx-certs:/etc/letsencrypt \
-  certbot/certbot certonly --webroot -w /var/www/html \
-  -d replicable.com -d www.replicable.com \
-  --agree-tos -m diogo@replicable.com \
-  --non-interactive --no-eff-email
-
-Saving debug log to /var/log/letsencrypt/letsencrypt.log
-Account registered.
-Requesting a certificate for replicable.com and www.replicable.com
-
-Successfully received certificate.
-Certificate is saved at: /etc/letsencrypt/live/replicable.com/fullchain.pem
-Key is saved at:         /etc/letsencrypt/live/replicable.com/privkey.pem
-This certificate expires on 2026-02-04.
-These files will be updated when the certificate renews.
-NEXT STEPS:
-- The certificate will need to be renewed before it expires. Certbot can automatically renew the certificate in the background, but you may need to take steps to enable that functionality. See https://certbot.org/renewal-setup for instructions.
-
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-If you like Certbot, please consider supporting our work by:
- * Donating to ISRG / Let's Encrypt:   https://letsencrypt.org/donate
- * Donating to EFF:                    https://eff.org/donate-le
-- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-```
-
-add the live HTTPS config to the nginx server
-
-```sh
-replicable_SDK_VERSION=v1.1.0-b.1 docker compose exec nginx cp /etc/nginx/conf.d/20-web-https.conf.template etc/nginx/conf.d/20-web-https.conf
-replicable_SDK_VERSION=v1.1.0-b.1 docker compose exec nginx nginx -t
-replicable_SDK_VERSION=v1.1.0-b.1 docker compose exec nginx nginx -s reload
-```
-
 ## GitHub setup
 
 - Generate an npm automation token with publish rights for the `replicable` package (Account → Access Tokens in npm).
@@ -237,6 +167,10 @@ Checklist to keep HTTPS healthy
   - Copy env: `cp .env.example .env` and set required values
     - `MODELHUB_API_KEY`, `MODELHUB_BASE_URL`, `MODELHUB`
     - `AUTH_*` variables
+
+- devcontainer
+  - `docker compose -f .devcontainer/compose.yml build base`
+  - `docker compose -f .devcontainer/compose.yml build tools`
 
 - Start core services (database, vector store, observability)
   - `docker compose up -d milvus-etcd milvus-minio milvus db otel-collector prometheus tempo loki fluent-bit grafana`
