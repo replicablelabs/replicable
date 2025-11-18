@@ -1,0 +1,11 @@
+**/node_modules
+src/replicable/client/web/dist
+src/replicable/sdk/ts/dist
+src/replicable/client/web/.vite
+*.tsbuildinfo
+.git
+.github
+.DS_Store
+Thumbs.db
+!src/replicable/client/web/package-lock.json
+!src/replicable/sdk/ts/package-lock.json

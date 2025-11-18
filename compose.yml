@@ -1,0 +1,341 @@
+# compose project name #########################################################
+#
+# Using devcontainer, the project opens under your user name, which is what compose
+# takes as the project name. This can cause issues with dependencies on other
+# containers.
+#
+name: replicable
+services:
+  # BACKEND ####################################################################
+  milvus-etcd:
+    container_name: replicable-milvus-etcd
+    image: quay.io/coreos/etcd:v3.5.0
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - replicable-milvus-etcd:/etcd
+    # IMPORTANT: advertise a host reachable by other containers (NOT 127.0.0.1)
+    # If we advertise 127.0.0.1 Milvus will follow redirects to its own loopback and fail.
+    command: etcd -advertise-client-urls=http://milvus-etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "--endpoints=http://127.0.0.1:2379", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - replicable
+
+  milvus-minio:
+    container_name: replicable-milvus-minio
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - replicable-milvus-minio:/data
+    command: minio server /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - replicable
+
+  milvus:
+    build:
+      context: .
+      dockerfile: src/replicable/milvus/Dockerfile
+    image: ghcr.io/replicable/replicable-milvus:1.0.0
+    container_name: replicable-milvus
+    environment:
+      # Use explicit service names (no network aliases required)
+      # Service 'milvus-etcd' exposes client port 2379
+      ETCD_ENDPOINTS: milvus-etcd:2379
+      # Service 'milvus-minio' exposes port 9000
+      MINIO_ADDRESS: milvus-minio:9000
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-}
+    volumes:
+      - replicable-milvus:/var/lib/milvus
+    ports:
+      - "19530:19530" # grpc, http
+      - "9091:9091" # monitoring
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_started
+    networks:
+      - replicable
+
+  db:
+    build:
+      context: .
+      dockerfile: src/replicable/db/Dockerfile
+    image: replicable-db:1.0.0
+    container_name: replicable-db
+    restart: unless-stopped
+    environment:
+      # Postgres image consumes these; defaults also baked into Dockerfile but we keep explicit for clarity
+      POSTGRES_USER: replicable
+      POSTGRES_PASSWORD: replicablepwd
+      POSTGRES_DB: replicable
+    volumes:
+      - replicable-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # IMPORTANT: place db on the same user-defined network as api so hostname 'db' resolves inside api container
+    networks:
+      - replicable
+
+  api:
+    build:
+      context: .
+      dockerfile: src/replicable/api/Dockerfile
+    image: replicable-api:1.0.0
+    container_name: replicable-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      mcp:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    environment:
+      - MODELHUB_API_KEY
+      - MODELHUB_BASE_URL
+      - MODELHUB
+      - OTEL_SERVICE_NAME=replicable-otel-collector
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://replicable-otel-collector:4318
+      - OTEL_TRACES_SAMPLER=parentbased_always_on
+      - OTEL_EXPORTER_OTLP_INSECURE=true
+    env_file:
+      - .env
+    networks:
+      - replicable
+
+  mcp:
+    build:
+      context: .
+      dockerfile: src/replicable/mcp/Dockerfile
+    image: replicable-mcp:1.0.0
+    container_name: replicable-mcp
+    restart: unless-stopped
+    environment:
+      - CHUNK_POLICY_MODEL_PATH
+    networks:
+      - replicable
+
+  # FRONTEND ###################################################################
+  #
+  # local builds
+  #
+  # REQUIREMENTS
+  # - the replicable SDK must have been deployed to the npmjs registry @versionminu/replicable
+  #
+  # replicable_SDK_VERSION=v1.1.0-b.1 docker compose build --no-cache web
+  web:
+    build:
+      context: .
+      dockerfile: src/replicable/client/web/Dockerfile
+      target: runtime
+      args: # build-time args
+        SDK_VERSION: ${replicable_SDK_VERSION?Set replicable_SDK_VERSION (e.g. v1.0.0-b.1)}
+    env_file: # run-time env vars
+      - src/replicable/client/web/.env
+    image: replicable-web:1.0.0
+    container_name: replicable-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_started
+    environment:
+      VITE_API_BASE_URL: http://replicable-api:8000
+    expose:
+      - "80" # internal only; public traffic comes via the 'nginx' edge proxy
+    networks:
+      - replicable
+
+  # EDGE / REVERSE PROXY #######################################################
+  #
+  # replicable-nginx (public edge):
+  # - Terminates TLS on 443 and serves http-01 challenges on 80
+  # - Proxies www.replicable.com traffic to the internal web app (replicable-web)
+  # - Central place for redirects, security headers, compression, and future routing
+  #
+  # replicable-web (app):
+  # - Serves the built React app over HTTP inside the Docker network
+  # - No public exposure; only the edge proxy talks to it
+  # - Continues to reverse-proxy /api to replicable-api internally
+  #
+  # local build
+  #
+  # replicable_SDK_VERSION=v1.1.0-b.1 docker compose up -d nginx
+  # replicable_SDK_VERSION=v1.1.0-b.1 docker compose exec nginx nginx -t
+  nginx:
+    build:
+      context: src/replicable/nginx
+      dockerfile: Dockerfile
+    image: replicable-nginx:1.0.0
+    container_name: replicable-nginx
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # ACME http-01 webroot (shared with certbot sidecar)
+      - ./src/replicable/nginx/www:/var/www/html
+      # Let's Encrypt cert storage (named volume persists across container restarts)
+      - replicable-nginx-certs:/etc/letsencrypt
+    networks:
+      - replicable
+
+  # OBSERVABILITY ##############################################################
+  loki:
+    image: grafana/loki:2.9.4
+    container_name: replicable-loki
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./src/replicable/observability/loki/config.yml:/etc/loki/config.yml:ro
+      - replicable-loki-data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - replicable
+
+  # Log forwarder/shipper
+  #
+  # Tails Docker container logs on the host, parses JSON, adds basic labels, and
+  # pushes logs into Loki for centralized search and retention.
+  fluent-bit:
+    image: fluent/fluent-bit:2.1.8
+    container_name: replicable-fluent-bit
+    environment:
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-local}
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./src/replicable/observability/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./src/replicable/observability/fluent-bit/parsers.conf:/fluent-bit/etc/parsers.conf:ro
+    depends_on:
+      - loki
+    networks:
+      - replicable
+
+  # Distributed tracing backend
+  #
+  # Stores traces sent via OTLP (through the OTEL Collector). Lets you view
+  # request spans/timelines in Grafana and correlate them with logs/metrics.
+  tempo:
+    image: grafana/tempo:2.2.2
+    container_name: replicable-tempo
+    command: -config.file=/etc/tempo/tempo.yml
+    volumes:
+      - ./src/replicable/observability/tempo/tempo.yml:/etc/tempo/tempo.yml:ro
+      - replicable-tempo-data:/var/tempo
+    ports:
+      - "3200:3200"
+    networks:
+      - replicable
+
+  # Vendor‑neutral telemetry router
+  #
+  # Receives OTLP data (traces and custom metrics) from the API SDKs/clients,
+  # batches and exports traces to Tempo and metrics to Prometheus (and logs to
+  # its console for debugging).
+  otel-collector:
+    image: otel/opentelemetry-collector:0.93.0
+    container_name: replicable-otel-collector
+    command:
+      - "--config=/etc/otelcol/config.yaml"
+    volumes:
+      - ./src/replicable/observability/otel-collector:/etc/otelcol:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+      - "8889:8889"
+    depends_on:
+      - tempo
+    networks:
+      - replicable
+
+  # Metrics collection and storage
+  #
+  # Scrapes /metrics endpoints (API, Milvus, OTEL collector), stores time series
+  # and powers Grafana metric queries and alerting rules.
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: replicable-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./src/replicable/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - replicable-prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+    networks:
+      - replicable
+
+# Visualization and dashboards
+#
+# Connects to Prometheus (metrics), Loki (logs), and Tempo (traces). Use it to
+# build panels, explore queries, and correlate logs/metrics/traces via labels
+# like trace_id
+  grafana:
+    image: grafana/grafana:10.2.3
+    container_name: replicable-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - replicable-grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    networks:
+      - replicable
+
+volumes:
+  replicable-db-data:
+    name: replicable-db-data
+  replicable-milvus:
+    name: replicable-milvus
+  replicable-milvus-minio:
+    name: replicable-milvus-minio
+  replicable-milvus-etcd:
+    name: replicable-milvus-etcd
+  replicable-loki-data:
+    name: replicable-loki-data
+  replicable-prometheus-data:
+    name: replicable-prometheus-data
+  replicable-tempo-data:
+    name: replicable-tempo-data
+  replicable-grafana-data:
+    name: replicable-grafana-data
+  # Persist Let’s Encrypt certs for the edge proxy
+  replicable-nginx-certs:
+    name: replicable-nginx-certs
+
+networks:
+  replicable:
+    name: replicable
+    external: true

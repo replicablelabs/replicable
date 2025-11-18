@@ -1,0 +1,29 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "api",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "replicable.api.main:app",
+                "--host", "0.0.0.0",
+                "--port", "8000",
+                "--reload"
+            ],
+            "env": {
+                "LOG_LEVEL": "DEBUG",
+                "DB_HOST": "db",
+                "DB_PORT": "5432",
+                "DB_USER": "replicable",
+                "DB_PASSWORD": "replicablepwd",
+                "DB_NAME": "replicable"
+            },
+            "jinja": true,
+            "justMyCode": true,
+            "console": "integratedTerminal"
+        }
+    ]
+}
