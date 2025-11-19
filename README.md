@@ -157,7 +157,212 @@ Checklist to keep HTTPS healthy
 - Ensure A records for `@` point to GitHub Pages IPs and `www` CNAME points to `replicable.github.io` (or your org/user).
 - Avoid conflicting A/AAAA/CNAME or forwarding at the registrar.
 
-## Contributors Quickstart
+## Auth0 configuration
+
+Configuration for `Auth0`
+
+### Tenant
+
+Create a tenant with:
+
+- name: `replicable`
+- region: europe `eu`
+- (`{tenant} → Settings → Logo URL`) logo: `https://raw.githubusercontent.com/replicablelabs/replicable/refs/heads/master/src/replicable/client/web/public/logo.png`
+
+Such that the tenant id becomes: `replicable.eu.auth0.com` (`→ AUTH_DOMAIN`)
+
+### SPA
+
+Create an `SPA` application and take note of:
+
+- name `replicable` (`→ AUTH_SPA_APPLICATION_CLIENT_NAME`)
+- id (`→ AUTH_SPA_APPLICATION_CLIENT_ID`)
+- secret (`→ AUTH_SPA_APPLICATION_CLIENT_SECRET`)
+- audience `https://api.replicable.com` (`→ AUTH_API_AUDIENCE`)
+- description: `replicable Auth0 Authorisation Server Application Client for SPA clients (e.g.: typescript client with replicable typescript SDK)`
+- Type: `Single Page Application`
+- logo: `https://raw.githubusercontent.com/replicablelabs/replicable/refs/heads/master/src/replicable/client/web/public/logo.png`
+- allowed callback URLs: `http://localhost:5173, http://localhost:5174, https://replicablelabs.com`
+- allowed logout URLs: `http://localhost:5173, http://localhost:5174, https://replicablelabs.com`
+- allowed web origins: `http://localhost:5173, http://localhost:5174, https://replicablelabs.com`
+- allow cross origin authentication: `false`
+- set idle refresh token lifetime: `true`
+- idle refresh token lifetime: `129600`
+- allow refresh token rotation: `true`
+- (Advanced Settings) Oauth:
+  - OIDC Conformant: `true`
+  - Grant Types: `Authorisation Code`, `Refresh Token`
+
+**How the Authentication Code Flow works for the SPA**
+
+Wrap the SPA with `Auth0Provider` and request an access token via `@auth0/auth0-react`. The SDK now accepts a `token` option and pauses data fetching until a bearer token is available.
+
+```tsx
+// src/replicable/client/web/src/main.tsx
+<Auth0Provider
+  domain={import.meta.env.VITE_AUTH0_DOMAIN}
+  clientId={import.meta.env.VITE_AUTH0_CLIENT_ID}
+  authorizationParams={{
+    audience: import.meta.env.VITE_AUTH0_AUDIENCE,
+    redirect_uri: window.location.origin,
+    scope: import.meta.env.VITE_AUTH0_SCOPE || 'openid profile email offline_access',
+  }}
+  cacheLocation="localstorage"
+  useRefreshTokens
+>
+  <App />
+</Auth0Provider>
+```
+
+Inside the app, let the hook manage the SDK and bearer token:
+
+```tsx
+const apiBase = import.meta.env.VITE_API_BASE || '/api';
+const { isAuthenticated, getAccessTokenSilently, loginWithRedirect } = useAuth0();
+const [token, setToken] = useState<string>();
+const replicable = usereplicable({ baseUrl: apiBase, token });
+
+useEffect(() => {
+  if (!isAuthenticated) {
+    void loginWithRedirect();
+    return;
+  }
+  void (async () => {
+    const t = await getAccessTokenSilently();
+    setToken(t);
+  })();
+}, [getAccessTokenSilently, isAuthenticated, loginWithRedirect]);
+
+if (!token || !replicable.currentUser) return <div>Authenticating…</div>;
+```
+
+The hook exposes the authenticated user via `replicable.currentUser`, backed by the new `GET /api/v1/users/me` endpoint. Missing users are auto-provisioned when an `email` claim is present.
+
+### Native
+
+Create a `Native` application and take note of:
+
+- name: `replicable` (`→ AUTH_API_NAME`)
+- ID (`→ AUTH_API_ID`)
+- audience (`← AUTH_API_AUDIENCE`)
+- description: `replicable Auth0 Authorisation Server Application Client for native clients (e.g.: curl client)`
+- type: `Native`
+- logo: `https://raw.githubusercontent.com/replicablelabs/replicable/refs/heads/master/src/replicable/client/web/public/logo.png`
+- allow cross origin authentication: `false`
+- allow refresh token rotation: `false`
+- (Advanced Settings) Oauth:
+  - OIDC Conformant: `true`
+  - Grant Types: `Refresh Token`, `Device Code`
+
+**How the Device Code Flow works for the Native application client**
+
+```bash
+curl --request POST "https://${AUTH_DOMAIN}/oauth/device/code"  \
+     --header "content-type: application/x-www-form-urlencoded" \
+     --data "grant_type=client_credentials"   \
+     --data "client_id=${AUTH_NATIVE_APPLICATION_CLIENT_ID}"   \
+     --data "audience=${AUTH_API_AUDIENCE}"
+{
+  "device_code":"1kex318sdJ-yfFFR1tY9Si8U",
+  "user_code":"WXVP-MVTL",
+  "verification_uri":"https://replicable.eu.auth0.com/activate",
+  "expires_in":900,
+  "interval":5,
+  "verification_uri_complete":"https://replicable.eu.auth0.com/activate?user_code=WXVP-MVTL"
+}
+DEVICE_CODE="1kex318sdJ-yfFFR1tY9Si8U"
+curl --request POST "https://${AUTH_DOMAIN}/oauth/token" \
+  --header "content-type: application/x-www-form-urlencoded" \
+  --data "grant_type=urn:ietf:params:oauth:grant-type:device_code" \
+  --data "device_code=${DEVICE_CODE}" \
+  --data "client_id=${AUTH_NATIVE_APPLICATION_CLIENT_ID}"
+{
+  "access_token":"{access-token}",
+  "expires_in":86400,
+  "token_type":"Bearer"
+}
+```
+
+The response contains an `access_token`. Call the API with it:
+
+```bash
+TOKEN="paste-token-here"
+curl http://replicable-api:8000/api/v1/notes/ \
+  --header "Authorization: Bearer ${TOKEN}"
+```
+
+### API
+
+Create an `API` and take note of:
+
+- name: `replicable` (`→ AUTH_NATIVE_APPLICATION_CLIENT_NAME`)
+- id (`→ AUTH_NATIVE_APPLICATION_CLIENT_ID`)
+- enable RBAC: `true`
+- add Permissions in the Access Token: `true`
+- allow skipping user consent: `true` (for applications flagged as First Party)
+- allow offline access: `true` (allow applications to ask for Refresh Tokens for this API)
+
+### Inject email into access tokens
+
+When `AUTH_ENABLED=true` the API auto‑provisions users from Auth0. The backend expects the Auth0 **access token** (not just the ID token) to carry an email address. Add an Auth0 Action so each issued access token includes the email claim:
+
+1. In the Auth0 dashboard open `Actions → Library → Create Action → Create Custom Action` with:
+  1. name: `AttachEmailToAccessToken`
+  2. trigger: `Login / Post Login`
+  3. runtime: `Node 22`
+2. Replace the generated code with:
+   ```js
+   exports.onExecutePostLogin = async (event, api) => {
+     const email = event.user?.email;
+     if (!email) return;
+
+     api.accessToken.setCustomClaim('https://replicable.com/email', email);
+     api.accessToken.setCustomClaim('https://replicable.com/email_verified', !!event.user?.email_verified);
+     api.accessToken.setCustomClaim('email', email); // temporary compatibility with existing backend
+   };
+   ```
+3. Click `Deploy`
+4. Go to `Actions → Triggers → post-login`, drag the new action into the flow between `Start` and `Complete`, and click `Apply`.
+5. Sign out and back in
+6. Inspect the network request for `/api/v1/users/me` — the bearer token should now contain `email` (and the namespaced claim). The backend will auto-provision the local user on the next request.
+
+If you later move the backend to the namespaced claim, remove the temporary line that sets the top-level `email`.
+  - Populate threads/messages: `make smoke-populate clean_before=1`
+  - Populate embeddings: `make smoke-embed-populate`
+
+:warning: Action-based claim injection only fires for the post-login trigger **when the flow uses the Universal Login interaction**. If you obtained this token via the device-code flow you set up, Auth0 treats that as a non-browser, MFA-less login and skips the login trigger
+
+### .env files
+
+Populate the following keys in `.env` (or deployment secrets):
+
+- `AUTH_ENABLED`: set to `true` to require Auth0 tokens.
+- `AUTH_DOMAIN`: your Auth0 tenant domain, e.g. `replicable.eu.auth0.com`.
+- `AUTH_API_AUDIENCE`: the API Identifier you configured under Auth0 → APIs (often looks like `https://api.replicable.com/`).
+- `AUTH_APPLICATION_CLIENT_ID`: client id of the confidential app that will request tokens (typically the machine-to-machine app).
+- `AUTH_APPLICATION_CLIENT_SECRET`: corresponding client secret (omit for public SPAs).
+
+Restart the API after editing the `.env` file so new settings are picked up.
+
+For the React client, supply the matching Vite variables (either in `src/replicable/client/web/.env`, Docker Compose overrides, or your hosting platform):
+
+- `VITE_AUTH0_DOMAIN`
+- `VITE_AUTH0_CLIENT_ID`
+- `VITE_AUTH0_AUDIENCE`
+- `VITE_AUTH0_SCOPE` (defaults to `openid profile email offline_access`)
+- `VITE_API_BASE` (`/api` when you proxy through the same origin)
+
+### Health checks and docs
+
+The liveness/readiness endpoints (`/api/v1/health/*`) stay unauthenticated so Kubernetes-style probes keep working. Swagger UI (`/docs`) and the OpenAPI schema (`/openapi.json`) remain publicly accessible for inspection; all other routes require a valid Auth0 bearer token.
+
+### Quick reference
+
+- `GET /api/v1/users/me` returns the local user record associated with the Auth0 `sub`.
+- Pass SPA environment variables (the `VITE_*` keys) through Docker Compose or your hosting platform so the frontend can reach Auth0.
+- The SDK’s `usereplicable` hook accepts `{ token }` and refreshes requests whenever the token changes.
+
+## Docker containers
 
 - Prerequisites
   - Docker and Docker Compose
@@ -178,10 +383,10 @@ Checklist to keep HTTPS healthy
   - `REPLICABLE_SDK_VERSION=v1.0.0-b.1 docker compose up -d milvus-etcd milvus-minio milvus db otel-collector prometheus tempo loki fluent-bit grafana`
 
 - Start API
-  - `docker compose up -d mcp`
-  - `docker compose up -d api`
-  - Verify: `curl http://replicable-api:8000/health` → `200 OK`
-  - Docs: open `http://replicable-api:8000/docs`
+  - `REPLICABLE_SDK_VERSION=v1.0.0-b.1 docker compose up -d mcp`
+  - `REPLICABLE_SDK_VERSION=v1.0.0-b.1 docker compose up -d api`
+  - Verify: `curl http://replicable-api:8001/health` → `200 OK`
+  - Docs: open `http://replicable-api:8001/docs`
 
 - Start Web UI (choose one)
   - Docker (static build): `docker compose up -d web` → `http://localhost:5173`
@@ -189,34 +394,6 @@ Checklist to keep HTTPS healthy
 
 - First data smoke tests (optional)
 
-## Auth0 configuration
-
-### Inject email into access tokens
-
-When `AUTH_ENABLED=true` the API auto‑provisions users from Auth0. The backend expects the Auth0 **access token** (not just the ID token) to carry an email address. Add an Auth0 Action so each issued access token includes the email claim:
-
-1. In the Auth0 dashboard open `Actions → Library → Build Custom`.
-2. Choose the **Post Login** trigger, name the action (e.g. `AttachEmailToAccessToken`), and create it.
-3. Replace the generated code with:
-
-   ```js
-   exports.onExecutePostLogin = async (event, api) => {
-     const email = event.user?.email;
-     if (!email) return;
-
-     api.accessToken.setCustomClaim('https://replicable.com/email', email);
-     api.accessToken.setCustomClaim('https://replicable.com/email_verified', !!event.user?.email_verified);
-     api.accessToken.setCustomClaim('email', email); // temporary compatibility with existing backend
-   };
-   ```
-
-4. Click **Deploy**.
-5. Go to `Actions → Triggers → post-login`, drag the new action into the flow between **Start** and **Complete**, and press **Apply**.
-6. Sign out and back in. Inspect the network request for `/api/v1/users/me` — the bearer token should now contain `email` (and the namespaced claim). The backend will auto-provision the local user on the next request.
-
-If you later move the backend to the namespaced claim, remove the temporary line that sets the top-level `email`.
-  - Populate threads/messages: `make smoke-populate clean_before=1`
-  - Populate embeddings: `make smoke-embed-populate`
 
 ## Project Layout
 

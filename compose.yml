@@ -61,7 +61,7 @@ services:
     volumes:
       - replicable-milvus:/var/lib/milvus
     ports:
-      - "19530:19530" # grpc, http
+      - "19531:19530" # grpc, http mapped to 19531 on host to avoid conflicts
       - "9092:9091" # monitoring
     depends_on:
       milvus-etcd:
@@ -109,7 +109,7 @@ services:
       otel-collector:
         condition: service_started
     ports:
-      - "8000:8000"
+      - "8001:8000" # expose API on 8001 locally to avoid host port collisions
     environment:
       - MODELHUB_API_KEY
       - MODELHUB_BASE_URL
